@@ -69,7 +69,7 @@ module "iam" {
 }
 
 module "secrets_manager" {
-  source = "../../modules/secrets-manager"
+  source = "../../modules/secret-manager"
 
   project     = "pharma"
   env         = "dev"
