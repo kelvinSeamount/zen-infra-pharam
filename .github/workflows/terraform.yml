@@ -39,7 +39,7 @@ permissions:
 
 env:
   TF_VERSION: '1.10.0'
-  AWS_REGION: us-east-1
+  AWS_REGION: eu-central-1
   # For push/PR auto-triggers, target is always dev.
   # For workflow_dispatch, use the selected environment.
   TARGET_ENV: ${{ github.event.inputs.environment || 'dev' }}
