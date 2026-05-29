@@ -17,6 +17,12 @@ on:
       - 'modules/**'
   workflow_dispatch:
     inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options: [dev, qa, prod]
       action:
         description: 'Terraform action'
         required: true
@@ -33,21 +39,24 @@ permissions:
 
 env:
   TF_VERSION: '1.10.0'
-  AWS_REGION: eu-central-1
+  AWS_REGION: us-east-1
+  # For push/PR auto-triggers, target is always dev.
+  # For workflow_dispatch, use the selected environment.
+  TARGET_ENV: ${{ github.event.inputs.environment || 'dev' }}
 
 # Prevent parallel runs on the same branch — avoids state conflicts
 concurrency:
-  group: terraform-${{ github.ref }}
+  group: terraform-${{ github.ref }}-${{ github.event.inputs.environment || 'dev' }}
   cancel-in-progress: false   # wait, don't cancel — safer for Terraform
 
 jobs:
   # ── Plan ──────────────────────────────────────────────────────────────────
   plan:
-    name: Terraform Plan
+    name: Terraform Plan (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: envs/dev
+         working-directory: envs/${{ github.event.inputs.environment || 'dev' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -63,6 +72,30 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve environment secrets
+        env:
+          DEV_DB_PASSWORD:  ${{ secrets.DEV_DB_PASSWORD }}
+          DEV_JWT_SECRET:   ${{ secrets.DEV_JWT_SECRET }}
+          QA_DB_PASSWORD:   ${{ secrets.QA_DB_PASSWORD }}
+          QA_JWT_SECRET:    ${{ secrets.QA_JWT_SECRET }}
+          PROD_DB_PASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+          PROD_JWT_SECRET:  ${{ secrets.PROD_JWT_SECRET }}
+        run: |
+          case "${{ env.TARGET_ENV }}" in
+            dev)
+              echo "TF_DB_PASSWORD=${DEV_DB_PASSWORD}"   >> $GITHUB_ENV
+              echo "TF_JWT_SECRET=${DEV_JWT_SECRET}"     >> $GITHUB_ENV
+              ;;
+            qa)
+              echo "TF_DB_PASSWORD=${QA_DB_PASSWORD}"    >> $GITHUB_ENV
+              echo "TF_JWT_SECRET=${QA_JWT_SECRET}"      >> $GITHUB_ENV
+              ;;
+            prod)
+              echo "TF_DB_PASSWORD=${PROD_DB_PASSWORD}"  >> $GITHUB_ENV
+              echo "TF_JWT_SECRET=${PROD_JWT_SECRET}"    >> $GITHUB_ENV
+              ;;
+          esac
 
       - name: Terraform Format Check
         id: fmt
@@ -108,16 +141,16 @@ jobs:
 
   # ── Apply ─────────────────────────────────────────────────────────────────
   apply:
-    name: Terraform Apply
+    name: Terraform Apply (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-latest
     needs: plan
     if: |
       (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply')
-    environment: dev   # ← pauses here and waits for manual approval
+    environment: ${{ github.event.inputs.environment || 'dev' }}
     defaults:
       run:
-        working-directory: envs/dev
+        working-directory: envs/${{ github.event.inputs.environment || 'dev' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -140,8 +173,8 @@ jobs:
       - name: Download plan file
         uses: actions/download-artifact@v4
         with:
-          name: tfplan
-          path: envs/dev
+          name: tfplan-${{ env.TARGET_ENV }}
+          path: envs/${{ env.TARGET_ENV }}
 
       - name: Terraform Apply
         run: |
@@ -153,20 +186,20 @@ jobs:
       - name: Release state lock on failure
         if: failure() || cancelled()
         run: |
-          aws s3 rm s3://${{ vars.TF_STATE_BUCKET }}/envs/dev/terraform.tfstate.tflock || true
+          aws s3 rm s3://${{ vars.TF_STATE_BUCKET }}/envs/${{ env.TARGET_ENV }}/terraform.tfstate.tflock || true
 
   # ── Destroy ───────────────────────────────────────────────────────────────
   destroy:
-    name: Terraform Destroy
+    name: Terraform Destroy (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-latest
     if: |
       github.event_name == 'workflow_dispatch' &&
       github.event.inputs.action == 'destroy' &&
       github.event.inputs.confirm_destroy == 'destroy'
-    environment: dev   # ← approval gate for destroy too
+    environment: envs/${{ github.event.inputs.environment || 'dev' }}
     defaults:
       run:
-        working-directory: envs/dev
+        working-directory: envs/${{ github.event.inputs.environment || 'dev' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -182,7 +215,30 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-
+      - name: Resolve environment secrets
+        env:
+          DEV_DB_PASSWORD:  ${{ secrets.DEV_DB_PASSWORD }}
+          DEV_JWT_SECRET:   ${{ secrets.DEV_JWT_SECRET }}
+          QA_DB_PASSWORD:   ${{ secrets.QA_DB_PASSWORD }}
+          QA_JWT_SECRET:    ${{ secrets.QA_JWT_SECRET }}
+          PROD_DB_PASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+          PROD_JWT_SECRET:  ${{ secrets.PROD_JWT_SECRET }}
+        run: |
+          case "${{ env.TARGET_ENV }}" in
+            dev)
+              echo "TF_DB_PASSWORD=${DEV_DB_PASSWORD}"   >> $GITHUB_ENV
+              echo "TF_JWT_SECRET=${DEV_JWT_SECRET}"     >> $GITHUB_ENV
+              ;;
+            qa)
+              echo "TF_DB_PASSWORD=${QA_DB_PASSWORD}"    >> $GITHUB_ENV
+              echo "TF_JWT_SECRET=${QA_JWT_SECRET}"      >> $GITHUB_ENV
+              ;;
+            prod)
+              echo "TF_DB_PASSWORD=${PROD_DB_PASSWORD}"  >> $GITHUB_ENV
+              echo "TF_JWT_SECRET=${PROD_JWT_SECRET}"    >> $GITHUB_ENV
+              ;;
+          esac
+          
       - name: Terraform Init
         run: terraform init -backend-config=backend.tfvars
 
